@@ -1,668 +1,201 @@
 package com.qto.pro
 
 import android.content.Context
+import android.content.Intent
+import android.graphics.*
+import android.graphics.pdf.PdfDocument
+import android.os.Environment
+import android.widget.Toast
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
-import androidx.compose.material3.Divider
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
+import androidx.core.content.FileProvider
 import java.io.File
 import java.io.FileOutputStream
+import java.text.SimpleDateFormat
+import java.util.*
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TakingOffScreen(data: QTOData, onUpdate: (QTOData) -> Unit, ctx: Context) {
-    var selectedSectionIndex by remember { mutableStateOf(-1) }
+    var selectedSection by remember { mutableStateOf<TakingOffSection?>(null) }
     var showAddSection by remember { mutableStateOf(false) }
-    var newSectionTitle by remember { mutableStateOf("") }
-    var showAddItem by remember { mutableStateOf(false) }
-    var editingItem by remember { mutableStateOf<TakingOffItem?>(null) }
-    var showDeleteConfirm by remember { mutableStateOf<String?>(null) }
+    var showPreview by remember { mutableStateOf(false) }
 
-    if (selectedSectionIndex == -1) {
-        // Section list view
-        Column(modifier = Modifier.fillMaxSize().background(Color(0xFF0A1628))) {
-            // Project info header
-            Card(
-                modifier = Modifier.fillMaxWidth().padding(12.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF1A2744)),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text("PROJECT: ${data.projectName.ifEmpty { "[Tap to set]" }}", 
-                        color = Color(0xFF2196F3), fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                    if (data.contractNo.isNotEmpty()) Text("Contract: ${data.contractNo}", 
-                        color = Color.Gray, fontSize = 12.sp)
-                    Text("Sheet ${data.sheetNo} of ${data.totalSheets} | ${data.date}", 
-                        color = Color.Gray, fontSize = 11.sp)
+    if (selectedSection != null) {
+        SectionDetailScreen(selectedSection!!, { updated ->
+            val nd = data.copy(); val idx = nd.sections.indexOfFirst { it.id == updated.id }
+            if (idx >= 0) { nd.sections[idx] = updated; onUpdate(nd) }; selectedSection = updated
+        }, { selectedSection = null })
+        return
+    }
+    if (showPreview) { DocumentPreviewScreen(data, ctx) { showPreview = false }; return }
+
+    Scaffold(
+        topBar = { TopAppBar(title = { Text("📐 Taking Off", fontWeight = FontWeight.Bold) },
+            actions = {
+                TextButton(onClick = { showAddSection = true }) { Text("+ Section", color = Color(0xFF2196F3)) }
+                TextButton(onClick = { showPreview = true }) { Text("📄", fontSize = 20.sp) }
+            }, colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFF0A1628))) }
+    ) { padding ->
+        LazyColumn(modifier = Modifier.padding(padding).padding(16.dp)) {
+            item {
+                Card(Modifier.fillMaxWidth().padding(bottom = 16.dp), colors = CardDefaults.cardColors(containerColor = Color(0xFF1A2744))) {
+                    Column(Modifier.padding(16.dp)) {
+                        Text("QUANTITY TAKE-OFF SHEET", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color(0xFF2196F3), textAlign = TextAlign.Center)
+                        Spacer(Modifier.height(8.dp))
+                        Row { Text("PROJECT: ", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.Gray); BasicTextField(value = data.projectName, onValueChange = { onUpdate(data.copy(projectName = it)) }, textStyle = TextStyle(fontSize = 12.sp, color = Color.White), modifier = Modifier.weight(1f).background(Color(0xFF2A3755)).padding(4.dp), singleLine = true) }
+                        Row(Modifier.padding(top = 4.dp)) { Text("CONTRACT: ", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.Gray); BasicTextField(value = data.contractNo, onValueChange = { onUpdate(data.copy(contractNo = it)) }, textStyle = TextStyle(fontSize = 11.sp, color = Color.White), modifier = Modifier.weight(1f).background(Color(0xFF2A3755)).padding(4.dp), singleLine = true) }
+                        Text("Sheet ${data.sheetNo} of ${data.totalSheets} | ${data.date}", fontSize = 10.sp, color = Color.Gray)
+                    }
                 }
             }
-
-            // Sections list
-            LazyColumn(modifier = Modifier.weight(1f)) {
-                items(data.sections.size) { i ->
-                    val section = data.sections[i]
-                    val totalQty = section.items.sumOf { calculateQuantity(it) }
-                    val deductions = section.items.filter { it.isDeduction }.sumOf { calculateQuantity(it) }
-                    val netQty = totalQty - deductions
-
-                    Card(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)
-                            .clickable { selectedSectionIndex = i },
-                        colors = CardDefaults.cardColors(containerColor = Color(0xFF1A2744)),
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(12.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("${i+1}. ${section.title}", color = Color.White, 
-                                    fontWeight = FontWeight.Medium, fontSize = 13.sp)
-                                Text("${section.items.size} items | Net: ${formatQuantity(netQty)} m³", 
-                                    color = Color.Gray, fontSize = 11.sp)
-                            }
-                            IconButton(onClick = { 
-                                val new = data.copy(sections = data.sections.toMutableList().also { it.removeAt(i) })
-                                onUpdate(new)
-                                if (selectedSectionIndex >= new.sections.size) selectedSectionIndex = -1
-                            }) {
-                                Icon(Icons.Default.Delete, "Delete", tint = Color(0xFFFF5252))
-                            }
+            if (data.sections.isEmpty()) {
+                item { Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { Column(horizontalAlignment = Alignment.CenterHorizontally) { Text("📐", fontSize = 48.sp); Text("No sections added yet", color = Color.Gray, fontSize = 14.sp); Text("Tap '+ Section' to start", color = Color.Gray, fontSize = 12.sp) } } }
+            }
+            items(data.sections) { section ->
+                val totalQty = section.items.filter { !it.isDeduction }.sumOf { it.quantity.toDoubleOrNull() ?: 0.0 } - section.items.filter { it.isDeduction }.sumOf { it.quantity.toDoubleOrNull() ?: 0.0 }
+                Card(Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable { selectedSection = section }, colors = CardDefaults.cardColors(containerColor = Color(0xFF1A2744))) {
+                    Column(Modifier.padding(16.dp)) {
+                        Row(horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) { Text(section.title.uppercase(), fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color(0xFF2196F3)); Text("${section.items.size} items", fontSize = 11.sp, color = Color.Gray) }
+                            if (totalQty > 0) Surface(color = Color(0xFF2196F3).copy(alpha = 0.2f), shape = MaterialTheme.shapes.small) { Text("Total: ${"%.2f".format(totalQty)}", Modifier.padding(horizontal = 8.dp, vertical = 4.dp), fontSize = 12.sp, color = Color(0xFF2196F3), fontWeight = FontWeight.Bold) }
                         }
+                        TextButton({ val nd = data.copy(); nd.sections.removeAll { it.id == section.id }; onUpdate(nd) }) { Text("🗑️ Remove", fontSize = 10.sp, color = Color(0xFFFF453A)) }
                     }
                 }
             }
-
-            // Add section buttons
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(12.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Button(
-                    onClick = { showAddSection = true },
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2196F3)),
-                    shape = RoundedCornerShape(8.dp)
-                ) { Text("+ Add Section") }
-
-                OutlinedButton(
-                    onClick = {
-                        val new = data.copy(sections = data.sections.toMutableList().also { 
-                            it.add(TakingOffSection(title = KENYAN_SECTIONS.first()))
-                        })
-                        onUpdate(new)
-                        selectedSectionIndex = new.sections.size - 1
-                    },
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(8.dp)
-                ) { Text("Quick Add", fontSize = 12.sp) }
-            }
-        }
-
-        // Add section dialog
-        if (showAddSection) {
-            AlertDialog(
-                onDismissRequest = { showAddSection = false },
-                title = { Text("Add Section", color = Color.White) },
-                text = {
-                    Column {
-                        KENYAN_SECTIONS.forEach { title ->
-                            TextButton(
-                                onClick = {
-                                    val new = data.copy(sections = data.sections.toMutableList().also {
-                                        it.add(TakingOffSection(title = title))
-                                    })
-                                    onUpdate(new)
-                                    selectedSectionIndex = new.sections.size - 1
-                                    showAddSection = false
-                                },
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text(title, color = Color(0xFF2196F3), fontSize = 12.sp)
-                            }
-                        }
-                    }
-                },
-                confirmButton = {},
-                dismissButton = {
-                    TextButton(onClick = { showAddSection = false }) {
-                        Text("Cancel", color = Color.Gray)
-                    }
-                },
-                containerColor = Color(0xFF1A2744)
-            )
-        }
-    } else {
-        // 3-column taking-off view for selected section
-        val section = data.sections[selectedSectionIndex]
-        TakingOffDetailView(
-            section = section,
-            onBack = { selectedSectionIndex = -1 },
-            onUpdateSection = { updated ->
-                val new = data.copy(sections = data.sections.toMutableList().also { it[selectedSectionIndex] = updated })
-                onUpdate(new)
-            },
-            onAddItem = { showAddItem = true; editingItem = null },
-            onEditItem = { editingItem = it; showAddItem = true },
-            onDeleteItem = { itemId ->
-                val updated = section.copy(items = section.items.toMutableList().also { it.removeAll { i -> i.id == itemId } })
-                val new = data.copy(sections = data.sections.toMutableList().also { it[selectedSectionIndex] = updated })
-                onUpdate(new)
-            },
-            ctx = ctx
-        )
-
-        // Add/Edit item dialog
-        if (showAddItem) {
-            ItemEditDialog(
-                item = editingItem,
-                onDismiss = { showAddItem = false; editingItem = null },
-                onSave = { item ->
-                    val items = section.items.toMutableList()
-                    val idx = items.indexOfFirst { it.id == item.id }
-                    if (idx >= 0) items[idx] = item else items.add(item)
-                    val updated = section.copy(items = items)
-                    val new = data.copy(sections = data.sections.toMutableList().also { it[selectedSectionIndex] = updated })
-                    onUpdate(new)
-                    showAddItem = false
-                    editingItem = null
-                }
-            )
+            item { Spacer(Modifier.height(80.dp)) }
         }
     }
-}
-
-@Composable
-fun TakingOffDetailView(
-    section: TakingOffSection,
-    onBack: () -> Unit,
-    onUpdateSection: (TakingOffSection) -> Unit,
-    onAddItem: () -> Unit,
-    onEditItem: (TakingOffItem) -> Unit,
-    onDeleteItem: (String) -> Unit,
-    ctx: Context
-) {
-    Column(modifier = Modifier.fillMaxSize().background(Color(0xFF0A1628))) {
-        // Header with back button
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.Default.ArrowBack, "Back", tint = Color.White)
+    if (showAddSection) {
+        var customName by remember { mutableStateOf("") }
+        AlertDialog({ showAddSection = false }, title = { Text("Add Section") }, text = {
+            Column(Modifier.fillMaxWidth().heightIn(max = 400.dp).verticalScroll(rememberScrollState())) {
+                KENYAN_SECTIONS.forEach { s -> TextButton({ val nd = data.copy(); nd.sections.add(TakingOffSection(title = s)); onUpdate(nd); showAddSection = false }, Modifier.fillMaxWidth()) { Text(s, fontSize = 12.sp, color = Color(0xFF2196F3)) } }
+                Divider(Modifier.padding(vertical = 8.dp))
+                OutlinedTextField(customName, { customName = it }, label = { Text("Or custom section name") }, modifier = Modifier.fillMaxWidth())
             }
-            Text(section.title, color = Color(0xFF2196F3), 
-                fontWeight = FontWeight.Bold, fontSize = 14.sp, modifier = Modifier.weight(1f))
-            IconButton(onClick = onAddItem) {
-                Icon(Icons.Default.Add, "Add Item", tint = Color(0xFF4CAF50))
-            }
-        }
-
-        // Column headers
-        Row(
-            modifier = Modifier.fillMaxWidth().background(Color(0xFF152040)).padding(8.dp),
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Text("Dimensions (L×W×H)", color = Color(0xFF2196F3), fontSize = 10.sp, 
-                fontWeight = FontWeight.Bold, modifier = Modifier.weight(1.2f))
-            Text("Waste/\nCross-ref", color = Color(0xFF2196F3), fontSize = 10.sp, 
-                fontWeight = FontWeight.Bold, modifier = Modifier.weight(0.8f), textAlign = TextAlign.Center)
-            Text("Description / Remarks", color = Color(0xFF2196F3), fontSize = 10.sp, 
-                fontWeight = FontWeight.Bold, modifier = Modifier.weight(1.5f))
-        }
-        Divider(color = Color(0xFF2196F3), thickness = 1.dp)
-
-        // Items list
-        LazyColumn(modifier = Modifier.weight(1f)) {
-            items(section.items.size) { i ->
-                val item = section.items[i]
-                val qty = calculateQuantity(item)
-                val bgColor = if (item.isDeduction) Color(0xFF2A1010) else Color(0xFF1A2744)
-
-                Card(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp)
-                        .clickable { onEditItem(item) },
-                    colors = CardDefaults.cardColors(containerColor = bgColor),
-                    shape = RoundedCornerShape(4.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.padding(6.dp),
-                        verticalAlignment = Alignment.Top
-                    ) {
-                        // Column 1: Dimensions
-                        Column(modifier = Modifier.weight(1.2f)) {
-                            if (item.isDeduction) {
-                                Text("LESS:", color = Color(0xFFFF5252), fontSize = 9.sp, fontWeight = FontWeight.Bold)
-                            }
-                            Text("${item.itemNo}", color = Color.Gray, fontSize = 9.sp)
-                            Text(
-                                "${item.length} × ${item.width} × ${item.height}",
-                                color = Color.White, fontSize = 11.sp, fontFamily = FontFamily.Monospace
-                            )
-                            Text(
-                                "= ${formatQuantity(qty)} ${item.unit}",
-                                color = Color(0xFF4CAF50), fontSize = 10.sp, fontWeight = FontWeight.Bold,
-                                fontFamily = FontFamily.Monospace
-                            )
-                        }
-
-                        // Column 2: Waste/Cross-ref
-                        Column(
-                            modifier = Modifier.weight(0.8f),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            if (item.wasteMultiplier.isNotEmpty()) {
-                                Text("×${item.wasteMultiplier}", color = Color(0xFFFF9800), 
-                                    fontSize = 10.sp, fontFamily = FontFamily.Monospace)
-                            }
-                            if (item.crossRef.isNotEmpty()) {
-                                Text("ref: ${item.crossRef}", color = Color(0xFF64B5F6), 
-                                    fontSize = 8.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                            }
-                        }
-
-                        // Column 3: Description
-                        Column(modifier = Modifier.weight(1.5f)) {
-                            Text(
-                                item.description.ifEmpty { "[No description]" },
-                                color = Color.White, fontSize = 10.sp, maxLines = 4,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            if (item.remarks.isNotEmpty()) {
-                                Text("Note: ${item.remarks}", color = Color.Gray, fontSize = 8.sp, maxLines = 2)
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Totals row
-            item {
-                val totalQty = section.items.filter { !it.isDeduction }.sumOf { calculateQuantity(it) }
-                val deductions = section.items.filter { it.isDeduction }.sumOf { calculateQuantity(it) }
-                val netQty = totalQty - deductions
-
-                Card(
-                    modifier = Modifier.fillMaxWidth().padding(8.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF152040)),
-                    shape = RoundedCornerShape(8.dp)
-                ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Text("SECTION TOTALS", color = Color(0xFF2196F3), 
-                            fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                        Divider(color = Color.Gray, modifier = Modifier.padding(vertical = 4.dp))
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Gross:", color = Color.White, fontSize = 11.sp)
-                            Text("${formatQuantity(totalQty)} m³", color = Color.White, 
-                                fontSize = 11.sp, fontFamily = FontFamily.Monospace)
-                        }
-                        if (deductions > 0) {
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text("Less:", color = Color(0xFFFF5252), fontSize = 11.sp)
-                                Text("-${formatQuantity(deductions)} m³", color = Color(0xFFFF5252), 
-                                    fontSize = 11.sp, fontFamily = FontFamily.Monospace)
-                            }
-                        }
-                        Divider(color = Color(0xFF2196F3), modifier = Modifier.padding(vertical = 4.dp))
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("NET:", color = Color(0xFF4CAF50), fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                            Text("${formatQuantity(netQty)} m³", color = Color(0xFF4CAF50), 
-                                fontWeight = FontWeight.Bold, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
-                        }
-                    }
-                }
-            }
-        }
-
-        // Bottom action bar
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Button(
-                onClick = onAddItem,
-                modifier = Modifier.weight(1f),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50)),
-                shape = RoundedCornerShape(8.dp)
-            ) { Text("+ Item", fontSize = 12.sp) }
-
-            OutlinedButton(
-                onClick = {
-                    val updated = section.copy(items = section.items.toMutableList().also {
-                        it.add(TakingOffItem(
-                            isDeduction = true,
-                            description = "DEDUCTION: ",
-                            itemNo = "D${it.size + 1}"
-                        ))
-                    })
-                    onUpdateSection(updated)
-                },
-                modifier = Modifier.weight(1f),
-                shape = RoundedCornerShape(8.dp),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFFF5252))
-            ) { Text("+ Deduction", fontSize = 12.sp) }
-
-            IconButton(onClick = {
-                exportToPDF(section, ctx)
-            }) {
-                Icon(Icons.Default.PictureAsPdf, "Export PDF", tint = Color(0xFFFF5252))
-            }
-        }
+        }, confirmButton = { if (customName.isNotBlank()) Button({ val nd = data.copy(); nd.sections.add(TakingOffSection(title = customName)); onUpdate(nd); showAddSection = false }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2196F3))) { Text("Add Custom") } }, dismissButton = { Button({ showAddSection = false }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2C2C2E))) { Text("Cancel") } })
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ItemEditDialog(
-    item: TakingOffItem?,
-    onDismiss: () -> Unit,
-    onSave: (TakingOffItem) -> Unit
-) {
-    val isNew = item == null
-    var itemNo by remember { mutableStateOf(item?.itemNo ?: "") }
-    var description by remember { mutableStateOf(item?.description ?: "") }
-    var unit by remember { mutableStateOf(item?.unit ?: "m³") }
-    var length by remember { mutableStateOf(item?.length ?: "") }
-    var width by remember { mutableStateOf(item?.width ?: "") }
-    var height by remember { mutableStateOf(item?.height ?: "") }
-    var waste by remember { mutableStateOf(item?.wasteMultiplier ?: "") }
-    var crossRef by remember { mutableStateOf(item?.crossRef ?: "") }
-    var isDeduction by remember { mutableStateOf(item?.isDeduction ?: false) }
-    var remarks by remember { mutableStateOf(item?.remarks ?: "") }
-    var unitExpanded by remember { mutableStateOf(false) }
-
-    val calcQty = calculateQuantity(TakingOffItem(
-        length = length, width = width, height = height, 
-        wasteMultiplier = waste, unit = unit
-    ))
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(if (isNew) "Add Item" else "Edit Item", color = Color.White, fontWeight = FontWeight.Bold) },
-        text = {
-            Column(
-                modifier = Modifier.verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                // Item number
-                OutlinedTextField(
-                    value = itemNo, onValueChange = { itemNo = it },
-                    label = { Text("Item No.") },
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = textFieldColors(),
-                    singleLine = true
-                )
-
-                // Description
-                OutlinedTextField(
-                    value = description, onValueChange = { description = it },
-                    label = { Text("Description") },
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 80.dp),
-                    colors = textFieldColors(),
-                    maxLines = 4
-                )
-
-                // Unit dropdown
-                ExposedDropdownMenuBox(
-                    expanded = unitExpanded,
-                    onExpandedChange = { unitExpanded = it }
-                ) {
-                    OutlinedTextField(
-                        value = unit, onValueChange = {},
-                        readOnly = true, label = { Text("Unit") },
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = unitExpanded) },
-                        modifier = Modifier.fillMaxWidth().menuAnchor(),
-                        colors = textFieldColors()
-                    )
-                    ExposedDropdownMenu(expanded = unitExpanded, onDismissRequest = { unitExpanded = false }) {
-                        KENYAN_UNITS.forEach { u ->
-                            DropdownMenuItem(
-                                text = { Text(u) },
-                                onClick = { unit = u; unitExpanded = false }
-                            )
-                        }
+fun SectionDetailScreen(section: TakingOffSection, onUpdateSection: (TakingOffSection) -> Unit, onBack: () -> Unit) {
+    var showAddItem by remember { mutableStateOf(false) }
+    var editingItem by remember { mutableStateOf<TakingOffItem?>(null) }
+    Scaffold(
+        topBar = { TopAppBar(title = { Text(section.title.take(30), fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color(0xFF2196F3)) }, navigationIcon = { TextButton(onClick = onBack) { Text("← Back", color = Color(0xFF2196F3)) } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFF0A1628))) },
+        floatingActionButton = { FloatingActionButton({ showAddItem = true }, containerColor = Color(0xFF2196F3)) { Text("+", fontSize = 24.sp, color = Color.White) } }
+    ) { padding ->
+        val totalQty = section.items.filter { !it.isDeduction }.sumOf { it.quantity.toDoubleOrNull() ?: 0.0 } - section.items.filter { it.isDeduction }.sumOf { it.quantity.toDoubleOrNull() ?: 0.0 }
+        LazyColumn(Modifier.padding(padding).padding(8.dp)) {
+            item { Card(Modifier.fillMaxWidth().padding(bottom = 8.dp), colors = CardDefaults.cardColors(containerColor = Color(0xFF1A2744))) { Column(Modifier.padding(12.dp)) { Text(section.title.uppercase(), fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color(0xFF2196F3)); Row(horizontalArrangement = Arrangement.SpaceBetween) { Text("${section.items.size} items", fontSize = 11.sp, color = Color.Gray); Text("TOTAL: ${"%.2f".format(totalQty)}", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color(0xFF4CAF50)) } } } }
+            item { Row(Modifier.fillMaxWidth().background(Color(0xFF2A3755)).padding(8.dp)) { Text("DIMENSIONS (L×W×H)", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = Color.Gray, modifier = Modifier.weight(1.2f)); Text("WASTE/REF", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = Color.Gray, modifier = Modifier.weight(0.6f)); Text("DESCRIPTION", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = Color.Gray, modifier = Modifier.weight(1.5f)) }; Divider(color = Color(0xFF2196F3), thickness = 1.dp) }
+            items(section.items) { item ->
+                val qty = item.quantity.toDoubleOrNull() ?: 0.0
+                Card(Modifier.fillMaxWidth().padding(vertical = 2.dp).clickable { editingItem = item }, colors = CardDefaults.cardColors(containerColor = if (item.isDeduction) Color(0xFF2A1A1A) else Color(0xFF1A2744))) {
+                    Row(Modifier.padding(8.dp)) {
+                        Column(Modifier.weight(1.2f)) { if (item.length.isNotEmpty()) { Text(item.length, fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = Color.White); if (item.width.isNotEmpty()) Text(item.width, fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = Color.White); if (item.height.isNotEmpty()) Text(item.height, fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = Color.White); Divider(color = Color.Gray, thickness = 0.5.dp) }; Text(if (qty > 0) "%.2f".format(qty) else "", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = if (item.isDeduction) Color(0xFFFF453A) else Color(0xFF4CAF50), fontFamily = FontFamily.Monospace) }
+                        Column(Modifier.weight(0.6f)) { if (item.wasteMultiplier.isNotEmpty()) Text("${item.wasteMultiplier}/", fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = Color(0xFFFF9F0A)); if (item.crossRef.isNotEmpty()) Text(item.crossRef, fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = Color.Gray); if (item.isDeduction) Text("(Less)", fontSize = 9.sp, color = Color(0xFFFF453A), fontWeight = FontWeight.Bold) }
+                        Column(Modifier.weight(1.5f)) { Text(item.description.ifEmpty { "[No description]" }, fontSize = 10.sp, color = Color.White, maxLines = 4); Text(item.unit, fontSize = 9.sp, color = Color.Gray); if (item.remarks.isNotEmpty()) Text("Note: ${item.remarks}", fontSize = 9.sp, color = Color(0xFFA0A0B8)) }
                     }
                 }
-
-                // Dimensions
-                Text("Dimensions", color = Color(0xFF2196F3), fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = length, onValueChange = { length = it },
-                        label = { Text("Length") },
-                        modifier = Modifier.weight(1f),
-                        colors = textFieldColors(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                        singleLine = true
-                    )
-                    OutlinedTextField(
-                        value = width, onValueChange = { width = it },
-                        label = { Text("Width") },
-                        modifier = Modifier.weight(1f),
-                        colors = textFieldColors(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                        singleLine = true
-                    )
-                    OutlinedTextField(
-                        value = height, onValueChange = { height = it },
-                        label = { Text("Height") },
-                        modifier = Modifier.weight(1f),
-                        colors = textFieldColors(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                        singleLine = true
-                    )
-                }
-
-                // Calculated quantity preview
-                if (length.isNotEmpty() || width.isNotEmpty() || height.isNotEmpty()) {
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = Color(0xFF0D2137)),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            "Calculated: ${formatQuantity(calcQty)} $unit",
-                            modifier = Modifier.padding(8.dp),
-                            color = Color(0xFF4CAF50),
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 13.sp,
-                            fontFamily = FontFamily.Monospace
-                        )
-                    }
-                }
-
-                // Waste multiplier
-                OutlinedTextField(
-                    value = waste, onValueChange = { waste = it },
-                    label = { Text("Waste Multiplier") },
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = textFieldColors(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                    singleLine = true,
-                    placeholder = { Text("e.g., 1.05 for 5% waste", fontSize = 10.sp, color = Color.Gray) }
-                )
-
-                // Cross reference
-                OutlinedTextField(
-                    value = crossRef, onValueChange = { crossRef = it },
-                    label = { Text("Cross Reference") },
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = textFieldColors(),
-                    singleLine = true
-                )
-
-                // Deduction toggle
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Checkbox(
-                        checked = isDeduction,
-                        onCheckedChange = { isDeduction = it },
-                        colors = CheckboxDefaults.colors(checkedColor = Color(0xFFFF5252))
-                    )
-                    Text("This is a deduction (LESS)", color = if (isDeduction) Color(0xFFFF5252) else Color.Gray, fontSize = 12.sp)
-                }
-
-                // Remarks
-                OutlinedTextField(
-                    value = remarks, onValueChange = { remarks = it },
-                    label = { Text("Remarks") },
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = textFieldColors(),
-                    maxLines = 2
-                )
             }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    val newItem = TakingOffItem(
-                        id = item?.id ?: java.util.UUID.randomUUID().toString(),
-                        itemNo = itemNo,
-                        description = description,
-                        unit = unit,
-                        length = length,
-                        width = width,
-                        height = height,
-                        wasteMultiplier = waste,
-                        crossRef = crossRef,
-                        isDeduction = isDeduction,
-                        quantity = formatQuantity(calcQty),
-                        remarks = remarks
-                    )
-                    onSave(newItem)
-                },
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2196F3))
-            ) { Text("Save") }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel", color = Color.Gray) }
-        },
-        containerColor = Color(0xFF1A2744)
-    )
+            item { Spacer(Modifier.height(80.dp)) }
+        }
+    }
+    if (showAddItem || editingItem != null) ItemFormDialog(editingItem, { item -> val nd = section.copy(); if (editingItem != null) { val idx = nd.items.indexOfFirst { it.id == editingItem!!.id }; if (idx >= 0) nd.items[idx] = item } else nd.items.add(item); onUpdateSection(nd); editingItem = null; showAddItem = false }, { editingItem = null; showAddItem = false })
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ItemFormDialog(existingItem: TakingOffItem?, onSave: (TakingOffItem) -> Unit, onDismiss: () -> Unit) {
+    var desc by remember { mutableStateOf(existingItem?.description ?: "") }
+    var unit by remember { mutableStateOf(existingItem?.unit ?: "m³") }
+    var length by remember { mutableStateOf(existingItem?.length ?: "") }
+    var width by remember { mutableStateOf(existingItem?.width ?: "") }
+    var height by remember { mutableStateOf(existingItem?.height ?: "") }
+    var waste by remember { mutableStateOf(existingItem?.wasteMultiplier ?: "") }
+    var crossRef by remember { mutableStateOf(existingItem?.crossRef ?: "") }
+    var isDeduction by remember { mutableStateOf(existingItem?.isDeduction ?: false) }
+    var remarks by remember { mutableStateOf(existingItem?.remarks ?: "") }
+    val qty = remember(length, width, height) { val l = length.toDoubleOrNull() ?: 0.0; val w = width.toDoubleOrNull() ?: 1.0; val h = height.toDoubleOrNull() ?: 1.0; val wm = waste.toDoubleOrNull() ?: 1.0; if (waste.isNotEmpty() && wm > 0) l * w * h * wm else l * w * h }
+    AlertDialog(onDismiss, title = { Text(if (existingItem != null) "Edit Item" else "Add Item", fontSize = 15.sp, fontWeight = FontWeight.Bold) }, text = {
+        Column(Modifier.fillMaxWidth().heightIn(max = 450.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("DIMENSIONS:", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF2196F3))
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) { OutlinedTextField(length, { length = it }, label = { Text("Length") }, modifier = Modifier.weight(1f), singleLine = true, textStyle = TextStyle(fontSize = 12.sp, fontFamily = FontFamily.Monospace)); Text("×", fontSize = 18.sp, color = Color.Gray, modifier = Modifier.align(Alignment.CenterVertically)); OutlinedTextField(width, { width = it }, label = { Text("Width") }, modifier = Modifier.weight(1f), singleLine = true, textStyle = TextStyle(fontSize = 12.sp, fontFamily = FontFamily.Monospace)); Text("×", fontSize = 18.sp, color = Color.Gray, modifier = Modifier.align(Alignment.CenterVertically)); OutlinedTextField(height, { height = it }, label = { Text("Height/Depth") }, modifier = Modifier.weight(1f), singleLine = true, textStyle = TextStyle(fontSize = 12.sp, fontFamily = FontFamily.Monospace)) }
+            Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF0F766E))) { Row(Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement = Arrangement.SpaceBetween) { Text("QTY: ${"%.3f".format(qty)}", fontWeight = FontWeight.Bold, color = Color.White, fontFamily = FontFamily.Monospace); Text(unit, color = Color(0xFFA0A0B8)) } }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { OutlinedTextField(waste, { waste = it }, label = { Text("Waste ×") }, modifier = Modifier.weight(1f), singleLine = true, textStyle = TextStyle(fontSize = 11.sp, fontFamily = FontFamily.Monospace)); OutlinedTextField(crossRef, { crossRef = it }, label = { Text("Cross Ref") }, modifier = Modifier.weight(1f), singleLine = true, textStyle = TextStyle(fontSize = 11.sp, fontFamily = FontFamily.Monospace)) }
+            Text("Unit:", fontSize = 11.sp, color = Color.Gray)
+            Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) { KENYAN_UNITS.take(8).forEach { u -> FilterChip(unit == u, { unit = u }, label = { Text(u, fontSize = 9.sp) }) } }
+            Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) { KENYAN_UNITS.drop(8).forEach { u -> FilterChip(unit == u, { unit = u }, label = { Text(u, fontSize = 9.sp) }) } }
+            Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(isDeduction, { isDeduction = it }); Text("Deduction ('Less')", fontSize = 11.sp, color = Color(0xFFFF453A)) }
+            OutlinedTextField(desc, { desc = it }, label = { Text("Description *") }, modifier = Modifier.fillMaxWidth(), maxLines = 4, textStyle = TextStyle(fontSize = 11.sp))
+            OutlinedTextField(remarks, { remarks = it }, label = { Text("Remarks (optional)") }, modifier = Modifier.fillMaxWidth(), singleLine = true, textStyle = TextStyle(fontSize = 11.sp))
+        }
+    }, confirmButton = { Button({ if (desc.isNotBlank()) onSave(TakingOffItem(id = existingItem?.id ?: UUID.randomUUID().toString(), description = desc, unit = unit, length = length, width = width, height = height, wasteMultiplier = waste, crossRef = crossRef, isDeduction = isDeduction, quantity = "%.3f".format(qty), remarks = remarks)) }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2196F3))) { Text("Save") } }, dismissButton = { Button(onDismiss, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2C2C2E))) { Text("Cancel") } })
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun DocumentPreviewScreen(data: QTOData, ctx: Context, onClose: () -> Unit) {
+    Scaffold(topBar = { TopAppBar(title = { Text("📄 Taking-Off Sheet", fontWeight = FontWeight.Bold) }, navigationIcon = { TextButton(onClick = onClose) { Text("← Back", color = Color(0xFF2196F3)) } }, actions = { TextButton({ val file = generateTakingOffPDF(data, ctx); try { val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", file); val intent = Intent(Intent.ACTION_SEND).apply { type = "application/pdf"; putExtra(Intent.EXTRA_STREAM, uri); addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION) }; ctx.startActivity(Intent.createChooser(intent, "Share")) } catch (e: Exception) { Toast.makeText(ctx, "PDF saved to Downloads", Toast.LENGTH_LONG).show() } }) { Text("📤 Share", color = Color(0xFF2196F3), fontSize = 11.sp) } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFF0A1628))) }) { padding ->
+        LazyColumn(Modifier.padding(padding).padding(16.dp)) {
+            item { Card(Modifier.fillMaxWidth().padding(bottom = 12.dp), colors = CardDefaults.cardColors(containerColor = Color(0xFF1A2744))) { Column(Modifier.padding(16.dp)) { Text("QUANTITY TAKE-OFF SHEET", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color(0xFF2196F3), textAlign = TextAlign.Center); Text("Republic of Kenya", fontSize = 11.sp, color = Color.Gray, textAlign = TextAlign.Center); Divider(color = Color(0xFF2196F3), modifier = Modifier.padding(vertical = 8.dp)); Text("PROJECT: ${data.projectName.ifEmpty { "_______________________" }}", fontSize = 12.sp, color = Color.White); Text("CONTRACT NO: ${data.contractNo.ifEmpty { "_______________________" }}", fontSize = 11.sp, color = Color.Gray); Text("SHEET ${data.sheetNo} OF ${data.totalSheets} | DATE: ${data.date}", fontSize = 10.sp, color = Color.Gray) } } }
+            data.sections.forEach { section ->
+                val totalQty = section.items.filter { !it.isDeduction }.sumOf { it.quantity.toDoubleOrNull() ?: 0.0 } - section.items.filter { it.isDeduction }.sumOf { it.quantity.toDoubleOrNull() ?: 0.0 }
+                if (section.items.isNotEmpty()) {
+                    item { Surface(Modifier.fillMaxWidth(), color = Color(0xFF2A3755)) { Text(section.title.uppercase(), fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color(0xFF2196F3), modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) }; Divider(color = Color(0xFF2196F3), thickness = 1.dp) }
+                    item { Row(Modifier.fillMaxWidth().background(Color(0xFF1A2744)).padding(6.dp)) { Text("DIMENSIONS", fontSize = 8.sp, fontWeight = FontWeight.Bold, color = Color.Gray, modifier = Modifier.weight(1.2f)); Text("×/REF", fontSize = 8.sp, fontWeight = FontWeight.Bold, color = Color.Gray, modifier = Modifier.weight(0.5f)); Text("DESCRIPTION", fontSize = 8.sp, fontWeight = FontWeight.Bold, color = Color.Gray, modifier = Modifier.weight(1.8f)) } }
+                    section.items.forEach { item ->
+                        item { Row(Modifier.fillMaxWidth().padding(4.dp)) { Column(Modifier.weight(1.2f)) { if (item.length.isNotEmpty()) Text(item.length, fontSize = 9.sp, fontFamily = FontFamily.Monospace, color = Color.White); if (item.width.isNotEmpty()) Text(item.width, fontSize = 9.sp, fontFamily = FontFamily.Monospace, color = Color.White); if (item.height.isNotEmpty()) Text(item.height, fontSize = 9.sp, fontFamily = FontFamily.Monospace, color = Color.White); Divider(color = Color.DarkGray, thickness = 0.5.dp); Text(item.quantity, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = if (item.isDeduction) Color(0xFFFF453A) else Color(0xFF4CAF50), fontFamily = FontFamily.Monospace) }; Column(Modifier.weight(0.5f)) { if (item.wasteMultiplier.isNotEmpty()) Text("${item.wasteMultiplier}/", fontSize = 9.sp, color = Color(0xFFFF9F0A)); if (item.crossRef.isNotEmpty()) Text(item.crossRef, fontSize = 9.sp, color = Color.Gray); if (item.isDeduction) Text("Less", fontSize = 8.sp, color = Color(0xFFFF453A)) }; Column(Modifier.weight(1.8f)) { Text(item.description, fontSize = 9.sp, color = Color.White); Text("${item.unit}${if (item.remarks.isNotEmpty()) " - ${item.remarks}" else ""}", fontSize = 8.sp, color = Color.Gray) } }; Divider(color = Color(0xFF2A3755), thickness = 0.5.dp) }
+                    }
+                    item { Row(Modifier.fillMaxWidth().background(Color(0xFF1A2E1A)).padding(6.dp), horizontalArrangement = Arrangement.End) { Text("SECTION TOTAL: ${"%.2f".format(totalQty)}", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF4CAF50)) }; Spacer(Modifier.height(8.dp)) }
+                }
+            }
+            item { val grandTotal = data.sections.sumOf { sec -> sec.items.filter { !it.isDeduction }.sumOf { it.quantity.toDoubleOrNull() ?: 0.0 } - sec.items.filter { it.isDeduction }.sumOf { it.quantity.toDoubleOrNull() ?: 0.0 } }; Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color(0xFF0F766E))) { Row(Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween) { Text("GRAND TOTAL", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color.White); Text("${"%.2f".format(grandTotal)}", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.White, fontFamily = FontFamily.Monospace) } } }
+            item { Spacer(Modifier.height(24.dp)); Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) { Column(horizontalAlignment = Alignment.CenterHorizontally) { Divider(color = Color.Gray, modifier = Modifier.width(120.dp)); Text("Quantity Surveyor", fontSize = 10.sp, color = Color.Gray); Text("Date: _______________", fontSize = 9.sp, color = Color.Gray) }; Column(horizontalAlignment = Alignment.CenterHorizontally) { Divider(color = Color.Gray, modifier = Modifier.width(120.dp)); Text("Checked by", fontSize = 10.sp, color = Color.Gray); Text("Date: _______________", fontSize = 9.sp, color = Color.Gray) } } }
+            item { Spacer(Modifier.height(80.dp)) }
+        }
+    }
+}
+
+fun generateTakingOffPDF(data: QTOData, ctx: Context): File {
+    val pdf = PdfDocument(); val pageInfo = PdfDocument.PageInfo.Builder(595, 842, 1).create(); val page = pdf.startPage(pageInfo); val canvas = page.canvas
+    val bold = Paint().apply { color = android.graphics.Color.BLACK; textSize = 16f; typeface = Typeface.DEFAULT_BOLD }; val normal = Paint().apply { color = android.graphics.Color.BLACK; textSize = 10f }; val small = Paint().apply { color = android.graphics.Color.DKGRAY; textSize = 8f }; var y = 30f
+    canvas.drawText("QUANTITY TAKE-OFF SHEET", 30f, y, bold); y += 20f; canvas.drawText("Republic of Kenya", 30f, y, small); y += 16f
+    canvas.drawText("Project: ${data.projectName.ifEmpty { "________________" }}", 30f, y, normal); y += 14f
+    canvas.drawText("Sheet ${data.sheetNo} of ${data.totalSheets} | ${data.date}", 30f, y, small); y += 20f
+    data.sections.forEach { section -> if (section.items.isNotEmpty()) { canvas.drawText(section.title.uppercase(), 30f, y, bold); y += 16f; section.items.forEach { item -> val dims = "${item.length} × ${item.width} × ${item.height}"; canvas.drawText("$dims = ${item.quantity} ${item.unit}", 30f, y, normal); canvas.drawText((if (item.isDeduction) "(LESS) " else "") + item.description.take(80), 200f, y, small); y += 12f } } }
+    pdf.finishPage(page); val file = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "QTO-${SimpleDateFormat("yyyyMMdd").format(Date())}.pdf"); pdf.writeTo(FileOutputStream(file)); pdf.close(); return file
 }
 
 @Composable
 fun SettingsScreen(data: QTOData, onUpdate: (QTOData) -> Unit) {
-    var projectName by remember { mutableStateOf(data.projectName) }
-    var contractNo by remember { mutableStateOf(data.contractNo) }
-    var sheetNo by remember { mutableStateOf(data.sheetNo) }
-    var totalSheets by remember { mutableStateOf(data.totalSheets) }
-
-    Column(
-        modifier = Modifier.fillMaxSize().background(Color(0xFF0A1628)).verticalScroll(rememberScrollState()).padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Text("Project Settings", color = Color(0xFF2196F3), fontWeight = FontWeight.Bold, fontSize = 18.sp)
-
-        OutlinedTextField(
-            value = projectName, onValueChange = { projectName = it },
-            label = { Text("Project Name") },
-            modifier = Modifier.fillMaxWidth(),
-            colors = textFieldColors(),
-            singleLine = true
-        )
-
-        OutlinedTextField(
-            value = contractNo, onValueChange = { contractNo = it },
-            label = { Text("Contract No.") },
-            modifier = Modifier.fillMaxWidth(),
-            colors = textFieldColors(),
-            singleLine = true
-        )
-
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(
-                value = sheetNo, onValueChange = { sheetNo = it },
-                label = { Text("Sheet No.") },
-                modifier = Modifier.weight(1f),
-                colors = textFieldColors(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                singleLine = true
-            )
-            OutlinedTextField(
-                value = totalSheets, onValueChange = { totalSheets = it },
-                label = { Text("Total Sheets") },
-                modifier = Modifier.weight(1f),
-                colors = textFieldColors(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                singleLine = true
-            )
+    Scaffold { padding ->
+        Column(Modifier.padding(padding).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("⚙️ Settings", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color(0xFF2196F3))
+            OutlinedTextField(data.projectName, { onUpdate(data.copy(projectName = it)) }, label = { Text("Project Name") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+            OutlinedTextField(data.contractNo, { onUpdate(data.copy(contractNo = it)) }, label = { Text("Contract Number") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+            OutlinedTextField(data.sheetNo, { onUpdate(data.copy(sheetNo = it)) }, label = { Text("Sheet Number") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+            OutlinedTextField(data.totalSheets, { onUpdate(data.copy(totalSheets = it)) }, label = { Text("Total Sheets") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         }
-
-        Button(
-            onClick = {
-                onUpdate(data.copy(
-                    projectName = projectName,
-                    contractNo = contractNo,
-                    sheetNo = sheetNo,
-                    totalSheets = totalSheets
-                ))
-            },
-            modifier = Modifier.fillMaxWidth(),
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2196F3)),
-            shape = RoundedCornerShape(8.dp)
-        ) { Text("Save Settings") }
-
-        Divider(color = Color.Gray, modifier = Modifier.padding(vertical = 8.dp))
-
-        Text("About", color = Color(0xFF2196F3), fontWeight = FontWeight.Bold, fontSize = 16.sp)
-        Text("QTO Pro v1.0", color = Color.White, fontSize = 14.sp)
-        Text("Kenyan Quantity Take-Off App", color = Color.Gray, fontSize = 12.sp)
-        Text("Traditional 3-Column Taking-Off Format", color = Color.Gray, fontSize = 12.sp)
-    }
-}
-
-@Composable
-fun textFieldColors() = OutlinedTextFieldDefaults.colors(
-    focusedTextColor = Color.White,
-    unfocusedTextColor = Color.White,
-    focusedBorderColor = Color(0xFF2196F3),
-    unfocusedBorderColor = Color.Gray,
-    focusedLabelColor = Color(0xFF2196F3),
-    unfocusedLabelColor = Color.Gray,
-    cursorColor = Color(0xFF2196F3)
-)
-
-fun exportToPDF(section: TakingOffSection, ctx: Context) {
-    try {
-        val file = File(ctx.cacheDir, "QTO_${section.title.replace(" ", "_")}.csv")
-        FileOutputStream(file).use { out ->
-            out.write("\uFEFF".toByteArray()) // BOM for Excel
-            out.write("QTO PRO - KENYAN TAKING-OFF SHEET\n".toByteArray())
-            out.write("Section: ${section.title}\n".toByteArray())
-            out.write("Item No.,Description,Unit,Dimensions (LxWxH),Waste,Cross-ref,Qty,Deduction,Remarks\n".toByteArray())
-            section.items.forEach { item ->
-                val dims = "${item.length}x${item.width}x${item.height}"
-                val qty = calculateQuantity(item)
-                val line = "\"${item.itemNo}\",\"${item.description}\",${item.unit},\"${dims}\",${item.wasteMultiplier},\"${item.crossRef}\",${formatQuantity(qty)},${item.isDeduction},\"${item.remarks}\"\n"
-                out.write(line.toByteArray())
-            }
-            val total = section.items.filter { !it.isDeduction }.sumOf { calculateQuantity(it) }
-            val ded = section.items.filter { it.isDeduction }.sumOf { calculateQuantity(it) }
-            out.write("\"\",\"NET TOTAL\",\"\",\"\",\"\",\"\",${formatQuantity(total - ded)},\"\",\"\"\n".toByteArray())
-        }
-        android.widget.Toast.makeText(ctx, "Exported to: ${file.absolutePath}", android.widget.Toast.LENGTH_LONG).show()
-    } catch (e: Exception) {
-        android.widget.Toast.makeText(ctx, "Export failed: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
     }
 }
